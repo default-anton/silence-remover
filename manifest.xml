@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<BlackmagicDesign>
+  <Plugin>
+    <Id>com.antonkuzmenko.silence_remover</Id>
+    <Name>Silence Remover</Name>
+    <Version>1.0</Version>
+    <Description>Silence Remover</Description>
+    <FilePath>dist/main.js</FilePath>
+  </Plugin>
+</BlackmagicDesign>
