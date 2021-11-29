@@ -1,3 +1,7 @@
+import { writeFileSync, unlinkSync } from "fs";
+import * as path from "path";
+import { ipcRenderer } from "electron";
+
 const PLUGIN_ID = "com.antonkuzmenko.silence_remover";
 
 let WorkflowIntegration: any = null;
@@ -15,22 +19,61 @@ if (
   console.error("failed to initialize the %s plugin", PLUGIN_ID);
 }
 
+const leftPad = (num: number, size: number): string => {
+  let s: string = num + "";
+  while (s.length < size) s = "0" + s;
+  return s;
+};
+
+const timecodeToFrames = (ts: string, fps: number): number => {
+  const [hours, minutes, seconds, frames] = ts.split(":");
+  return (
+    parseInt(frames) +
+    fps * parseInt(seconds) +
+    fps * 60 * parseInt(minutes) +
+    fps * 3600 * parseInt(hours)
+  );
+};
+
+const framesToTimecode = (frames: number, fps: number): string => {
+  const hours = Math.floor(frames / (fps * 3600));
+  const minutes = Math.floor((frames - hours * fps * 3600) / (fps * 60));
+  const seconds = Math.floor(
+    (frames - hours * fps * 3600 - minutes * fps * 60) / fps
+  );
+  const framesStr =
+    frames - hours * fps * 3600 - minutes * fps * 60 - seconds * fps;
+
+  return [
+    leftPad(hours, 2),
+    leftPad(minutes, 2),
+    leftPad(seconds, 2),
+    leftPad(framesStr, 2),
+  ].join(":");
+};
+
 class Clip {
   readonly mediaPoolItem: any;
+  private customStartFrame?: number;
+  private customEndFrame?: number;
 
   constructor(mediaPoolItem: any) {
     this.mediaPoolItem = mediaPoolItem;
   }
 
+  clone(): Clip {
+    const newClip = new Clip(this.mediaPoolItem);
+    newClip.customStartFrame = this.customStartFrame;
+    newClip.customEndFrame = this.customEndFrame;
+    return newClip;
+  }
+
   set startFrame(startFrame: number) {
-    this.mediaPoolItem.SetClipProperty(
-      "In",
-      this.framesToDavinciTS(startFrame)
-    );
+    this.customStartFrame = startFrame;
   }
 
   set endFrame(endFrame: number) {
-    this.mediaPoolItem.SetClipProperty("Out", this.framesToDavinciTS(endFrame));
+    this.customEndFrame = endFrame;
   }
 
   get name(): string {
@@ -53,6 +96,10 @@ class Clip {
     return this.mediaPoolItem.GetClipProperty("Duration");
   }
 
+  get frames(): number {
+    return this.endFrame - this.startFrame;
+  }
+
   get sampleRate(): string {
     return this.mediaPoolItem.GetClipProperty("Sample Rate");
   }
@@ -66,61 +113,54 @@ class Clip {
   }
 
   get startFrame(): number {
+    if (this.customStartFrame !== undefined) {
+      return this.customStartFrame;
+    }
+
     const start: string | undefined = this.mediaPoolItem.GetClipProperty("In");
 
     if (start === null) {
       return 0;
     }
 
-    return this.davinciTSToFrames(start);
+    return timecodeToFrames(start, this.fps);
   }
 
   get endFrame(): number {
+    if (this.customEndFrame !== undefined) {
+      return this.customEndFrame;
+    }
+
     const end: string | undefined = this.mediaPoolItem.GetClipProperty("Out");
 
     if (end === null) {
-      return this.davinciTSToFrames(this.duration);
+      return timecodeToFrames(this.duration, this.fps);
     }
 
-    return this.davinciTSToFrames(end);
-  }
-
-  private davinciTSToFrames(ts: string): number {
-    const [hours, minutes, seconds, frames] = ts.split(":");
-    return (
-      parseInt(frames) +
-      this.fps * parseInt(seconds) +
-      this.fps * 60 * parseInt(minutes) +
-      this.fps * 3600 * parseInt(hours)
-    );
-  }
-
-  private framesToDavinciTS(frames: number): string {
-    const hours = Math.floor(frames / (this.fps * 3600));
-    const minutes = Math.floor(
-      (frames - hours * this.fps * 3600) / (this.fps * 60)
-    );
-    const seconds = Math.floor(
-      (frames - hours * this.fps * 3600 - minutes * this.fps * 60) / this.fps
-    );
-    const framesStr =
-      frames -
-      hours * this.fps * 3600 -
-      minutes * this.fps * 60 -
-      seconds * this.fps;
-
-    return `${this.leftPad(hours, 2)}:${this.leftPad(
-      minutes,
-      2
-    )}:${this.leftPad(seconds, 2)}:${framesStr}`;
-  }
-
-  private leftPad(num: number, size: number): string {
-    let s: string = num + "";
-    while (s.length < size) s = "0" + s;
-    return s;
+    return timecodeToFrames(end, this.fps);
   }
 }
+
+const createEDLTimeline = (timelineName: string, clips: Clip[]): string => {
+  const header = `TITLE: ${timelineName}\nFCM: NON-DROP FRAME`;
+  let body = "";
+  let frames = 0;
+  for (const [index, clip] of clips.entries()) {
+    const startTimecode = framesToTimecode(clip.startFrame, clip.fps);
+    const endTimecode = framesToTimecode(clip.endFrame, clip.fps);
+    const clipStartInTimelineTimecode = framesToTimecode(frames, clip.fps);
+    const clipEndInTimelineTimecode = framesToTimecode(
+      frames + clip.frames,
+      clip.fps
+    );
+    const clipIndex = leftPad(index, 3);
+    body += `${clipIndex}  AX       V     C        ${startTimecode} ${endTimecode} ${clipStartInTimelineTimecode} ${clipEndInTimelineTimecode}\n`;
+    body += `* FROM CLIP NAME: ${clip.name}\n\n`;
+    frames += clip.frames;
+  }
+
+  return `${header}\n\n${body}`;
+};
 
 window.addEventListener("DOMContentLoaded", () => {
   const resolve = WorkflowIntegration.GetResolve();
@@ -134,41 +174,34 @@ window.addEventListener("DOMContentLoaded", () => {
   const mediaPool = project.GetMediaPool();
   const currentFolder = mediaPool.GetCurrentFolder();
   const clipsInCurrentFolder = currentFolder.GetClipList();
-  const clips: Clip[] = [];
+  let clip: Clip | undefined;
   for (const davinciClip of clipsInCurrentFolder) {
-    const clip = new Clip(davinciClip);
-    if (!clip.isVideo()) {
+    const c = new Clip(davinciClip);
+    if (!c.isVideo()) {
       continue;
     }
-    clips.push(clip);
+    clip = c;
   }
 
-  const timeline = mediaPool.CreateEmptyTimeline("TestTimeline");
-  if (!timeline) {
-    console.error("Error: Failed to create timeline!");
+  if (clip === undefined) {
+    console.log("nothing to do");
+    return;
   }
 
-  for (const clip of clips) {
-    if (clip.isVideo()) {
-      if (clip.endFrame - clip.startFrame < 3) {
-        mediaPool.AppendToTimeline(clip.mediaPoolItem);
-        continue;
-      }
+  const clip2 = clip.clone();
+  clip.endFrame = Math.floor(clip.frames / 2);
+  clip2.startFrame = clip.endFrame;
 
-      const originalStartFrame = clip.startFrame;
-      const originalEndFrame = clip.endFrame;
-      const clip1EndFrame = Math.floor(originalEndFrame / 2);
-
-      clip.endFrame = clip1EndFrame;
-      mediaPool.AppendToTimeline(clip.mediaPoolItem);
-
-      clip.endFrame = originalEndFrame;
-      clip.startFrame = clip1EndFrame + 1;
-      mediaPool.AppendToTimeline(clip);
-
-      // revert the clip to its original state
-      clip.startFrame = originalStartFrame;
-      clip.endFrame = originalEndFrame;
-    }
+  const timelineEDL = createEDLTimeline("TestTimeline", [clip, clip2]);
+  const tmpDir: string = ipcRenderer.sendSync("getTemp");
+  const edlFilePath = path.join(tmpDir, `${PLUGIN_ID}-${Date.now()}.edl`);
+  try {
+    writeFileSync(edlFilePath, timelineEDL);
+    mediaPool.ImportTimelineFromFile(edlFilePath, {
+      timelineName: "TestTimeline",
+      importSourceClips: false,
+    });
+  } finally {
+    unlinkSync(edlFilePath);
   }
 });

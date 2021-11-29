@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, ipcMain } from "electron";
 import { join as join_path } from "path";
 
 const createWindow = () => {
@@ -25,4 +25,8 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   app.quit();
+});
+
+ipcMain.on("getTemp", (event) => {
+  event.returnValue = app.getPath("temp");
 });
