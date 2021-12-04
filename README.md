@@ -1,6 +1,6 @@
 # silence-remover
 
-Remove silence from your videos
+Remove silence from videos
 
 ## Davinci Resolve Scripting Docs
 
