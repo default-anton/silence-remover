@@ -1,4 +1,4 @@
-# silence-remover
+# Silence remover 🤫 📼 
 
 Remove silence from videos
 
