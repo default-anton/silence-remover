@@ -114,7 +114,7 @@ export class Clip {
 
     const start: string | undefined = this.mediaPoolItem.GetClipProperty("In");
 
-    if (start === null) {
+    if (start === undefined) {
       return 0;
     }
 
@@ -128,7 +128,7 @@ export class Clip {
 
     const end: string | undefined = this.mediaPoolItem.GetClipProperty("Out");
 
-    if (end === null) {
+    if (end === undefined) {
       return timecodeToFrames(this.duration, this.fps);
     }
 

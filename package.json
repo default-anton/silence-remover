@@ -4,7 +4,8 @@
   "description": "Silence Remover",
   "main": "main.js",
   "scripts": {
-    "build": "tsc && npx webpack --config webpack.config.js && cp -R {img,css,index.html} dist/",
+    "copy": "cp -R {img,css,index.html} dist/",
+    "build": "tsc && npm run copy",
     "start": "npm run build && electron ./dist/main.js"
   },
   "repository": {
